@@ -1,0 +1,5 @@
+# Runtime image holds index.html, styles.css and js/ only.
+tests/
+README.md
+package.json
+LICENSE

@@ -1,0 +1,102 @@
+# Rust backend: formatting, lints, tests, MSRV and dependency policy.
+#
+# Every cargo invocation uses --locked: Cargo.lock is committed, so a build
+# must not silently resolve new dependency versions (only the `deny` job reads
+# the lockfile as-is, and it fails on yanked crates).
+name: backend-tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - name: cargo clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: twt
+          POSTGRES_PASSWORD: twt-dev
+          POSTGRES_DB: twt_cloud
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://twt:twt-dev@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - name: Generate dev JWKS keypair
+        run: ./dev/gen-dev-keys.sh
+      - name: cargo test
+        run: cargo test --all-targets --locked
+
+  # rust-version in Cargo.toml is a promise; this job holds it. All targets are
+  # checked so dev-dependencies and test code are covered too.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          key: msrv
+      - name: cargo check on MSRV
+        run: cargo check --all-targets --locked
+
+  # Licenses, RustSec advisories (cargo audit equivalent), yanked crates,
+  # wildcard requirements and registry sources.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: cargo deny check
+        run: cargo deny check

@@ -1,0 +1,38 @@
+# Same-origin HTTP entrypoint for the reconciled compose stack.
+#
+# This is not the TLS edge. A TLS-terminating reverse proxy forwards the
+# public URL here and owns the HTTP→HTTPS redirect and HSTS.
+#
+#   /            -> web:80
+#   /api/v1/*    -> api:8080
+#
+# The browser sees one origin, so the API needs no CORS. The proxy sets the
+# CSP for the composed stack; the web origin also sets one when used
+# standalone.
+{
+	admin off
+}
+
+:80 {
+	encode zstd gzip
+
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' {$TWT_CSP_CONNECT_SRC}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	handle /api/* {
+		reverse_proxy api:8080
+	}
+
+	handle {
+		reverse_proxy web:80
+	}
+}

@@ -1,0 +1,68 @@
+# Builds all three images from their Dockerfiles and boots the dev stack to
+# prove the compose wiring: proxy -> api/web, database migrations, healthchecks.
+name: docker
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate compose files
+        run: |
+          docker compose -f compose.yaml -f compose.dev.yaml config --quiet
+          POSTGRES_PASSWORD=ci-password \
+          OAUTH_ISSUER_URL=https://idp.example.com/ \
+          OAUTH_AUDIENCE=twt-api \
+          OAUTH_JWKS_URL=https://idp.example.com/jwks \
+          TWT_DOMAIN=twt.example.com \
+            docker compose -f compose.yaml -f compose.prod.yaml config --quiet
+
+      - name: Generate dev JWKS keypair
+        run: ./dev/gen-dev-keys.sh
+
+      - name: Build images
+        run: docker compose -f compose.yaml -f compose.dev.yaml build
+
+      - name: Start stack and wait for healthchecks
+        run: docker compose -f compose.yaml -f compose.dev.yaml up --detach --wait --wait-timeout 300
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          # Proxy health endpoint and same-origin API route.
+          test "$(curl --fail --silent --show-error http://127.0.0.1:8080/healthz)" = "ok"
+          curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/healthz
+          # Direct API port published by compose.dev.yaml for CLI clients.
+          curl --fail --silent --show-error http://127.0.0.1:9080/api/v1/healthz
+          # Web client is served behind the proxy with the security headers.
+          curl --fail --silent --show-error --output /dev/null http://127.0.0.1:8080/
+          curl --silent --show-error --head http://127.0.0.1:8080/ \
+            | grep --ignore-case --quiet 'content-security-policy:'
+          # Unauthenticated bootstrap document the clients use to find the IdP.
+          curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/config \
+            | python3 -c 'import json, sys; doc = json.load(sys.stdin); assert doc["issuer"], doc'
+
+      - name: Stack logs
+        if: failure()
+        run: docker compose -f compose.yaml -f compose.dev.yaml logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f compose.yaml -f compose.dev.yaml down --volumes

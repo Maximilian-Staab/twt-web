@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Static host for the twt web client.
+#
+# Views are hash-routed (js/main.js), so every URL maps 1:1 onto a file and
+# there is no history fallback to configure.
+{
+	admin off
+}
+
+:80 {
+	root * /usr/share/caddy
+	encode zstd gzip
+
+	# This origin speaks HTTP only; the TLS terminator in front of it owns the
+	# HTTPS redirect and HSTS. The CSP is still delivered to the browser
+	# through that terminator. TWT_CSP_CONNECT_SRC adds cross-origin API/IdP
+	# origins; it is empty by default, so only 'self' is allowed. The compose
+	# service sets it to the local API.
+	#
+	# No content-hashed asset names: let browsers revalidate via ETag/304
+	# instead of pinning stale JavaScript after a redeploy.
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' {$TWT_CSP_CONNECT_SRC}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+		Cache-Control "no-cache"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	@health path /healthz
+	respond @health "ok" 200
+
+	# Dotfiles are not part of the client; never serve one if it slips in.
+	@hidden path_regexp (^|/)\.
+	respond @hidden 404
+
+	file_server
+}

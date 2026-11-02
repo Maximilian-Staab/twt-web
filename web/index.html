@@ -1,0 +1,23 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-only · Copyright (C) 2026 twt-cloud contributors -->
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="referrer" content="no-referrer">
+    <!-- Fallback policy for servers that do not set headers (e.g.
+         python3 -m http.server). The container's Caddy sends a stricter
+         header CSP; connect-src stays open here so a header-less dev server
+         can reach an arbitrary backend. -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src *; object-src 'none'; base-uri 'none'; form-action 'self'">
+    <title>TrackWorkTime</title>
+    <link rel="stylesheet" href="styles.css">
+    <script type="module" src="js/main.js"></script>
+</head>
+<body>
+    <div id="app"></div>
+    <noscript>TrackWorkTime needs JavaScript enabled.</noscript>
+</body>
+</html>

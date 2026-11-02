@@ -1,0 +1,31 @@
+# Web client: no build step, so the checks are syntax and unit tests only.
+name: web-tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: web
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Syntax-check every module
+        run: find js -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Unit tests
+        run: node --test

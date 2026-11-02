@@ -1,0 +1,54 @@
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: "/backend"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo:
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # backend/Dockerfile (rust, debian) and compose.yaml (postgres).
+  - package-ecosystem: docker
+    directory: "/backend"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      docker-backend:
+        patterns:
+          - "*"
+
+  # deploy/Dockerfile.caddy (proxy/TLS edge base image).
+  - package-ecosystem: docker
+    directory: "/backend/deploy"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      docker-deploy:
+        patterns:
+          - "*"
+
+  - package-ecosystem: docker
+    directory: "/web"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      docker-web:
+        patterns:
+          - "*"

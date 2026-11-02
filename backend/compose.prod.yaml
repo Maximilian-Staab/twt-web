@@ -1,0 +1,54 @@
+# Production overrides. Layer on the base stack:
+#
+#   docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+#
+# Requires backend/.env (or exported variables) with at least:
+#   POSTGRES_PASSWORD, OAUTH_ISSUER_URL, OAUTH_AUDIENCE, OAUTH_JWKS_URL,
+#   TWT_DOMAIN
+#
+# Differences from the base stack:
+#   - no dev JWKS mount or I_ACCEPT_DEV_JWKS; the IdP endpoint is mandatory
+#   - no direct API port; all traffic goes through the same-origin proxy
+#   - a TLS edge (Caddy) owns public 80/443, redirects HTTP→HTTPS and adds HSTS
+#
+# Do not use this file when another reverse proxy already owns 80/443; point
+# that proxy at 127.0.0.1:8080 instead and use compose.yaml alone with the
+# OAuth values exported.
+
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in backend/.env}
+
+  api:
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://twt:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in backend/.env}@postgres:5432/twt_cloud
+      OAUTH_ISSUER_URL: ${OAUTH_ISSUER_URL:?set OAUTH_ISSUER_URL in backend/.env}
+      OAUTH_AUDIENCE: ${OAUTH_AUDIENCE:?set OAUTH_AUDIENCE in backend/.env}
+      OAUTH_JWKS_URL: ${OAUTH_JWKS_URL:?set OAUTH_JWKS_URL in backend/.env}
+
+  tls:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.caddy
+    environment:
+      TWT_DOMAIN: ${TWT_DOMAIN:?set TWT_DOMAIN in backend/.env}
+    volumes:
+      - ./deploy/domain.Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    depends_on:
+      proxy:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

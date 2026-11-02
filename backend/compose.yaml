@@ -1,0 +1,100 @@
+# Base stack: Postgres + storage API + web frontend + same-origin HTTP proxy.
+#
+# Environment-specific files layer on top:
+#   docker compose -f compose.yaml -f compose.dev.yaml  up -d --build   # local dev
+#   docker compose -f compose.yaml -f compose.prod.yaml up -d --build   # deployment
+#
+# Same-origin layout:
+#   /            -> web:80
+#   /api/v1/*    -> api:8080
+# so the browser sees one origin and needs no CORS.
+#
+# The proxy is the only published port (loopback 8080). It is not the TLS
+# edge: compose.prod.yaml adds the optional Caddy TLS terminator, or an
+# existing reverse proxy forwards the public URL to 127.0.0.1:8080. Only a TLS
+# terminator binds public 80/443.
+#
+# Base images are pinned by digest in the Dockerfiles; external images are
+# pinned here. Refresh a pin with `docker buildx imagetools inspect <image>`.
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    environment:
+      POSTGRES_USER: twt
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DB: twt_cloud
+    expose:
+      - "5432"
+    volumes:
+      - twt_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U twt -d twt_cloud"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://twt:${POSTGRES_PASSWORD:-}@postgres:5432/twt_cloud
+      BIND_ADDR: 0.0.0.0:8080
+      # Browser origins allowed to call the API cross-origin. The proxy below
+      # is same-origin, so this is empty by default. Set PUBLIC_URL (or
+      # CORS_ALLOWED_ORIGINS for several) when the frontend has its own
+      # origin. Exact origins, never URLs with a path.
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-${PUBLIC_URL:-}}
+      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID:-}
+      OAUTH_SCOPES: ${OAUTH_SCOPES:-openid,profile,offline_access}
+      RETENTION_DAYS: ${RETENTION_DAYS:-180}
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Healthcheck comes from the image: GET /api/v1/healthz on BIND_ADDR.
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    environment:
+      # Extra origins appended to the CSP's connect-src; 'self' is always
+      # allowed. Empty for the same-origin proxy; set it when the API or IdP
+      # is cross-origin.
+      TWT_CSP_CONNECT_SRC: ${TWT_CSP_CONNECT_SRC:-}
+    expose:
+      - "80"
+    restart: unless-stopped
+
+  # Same-origin HTTP entrypoint. Not the TLS edge: the TLS terminator forwards
+  # the public URL here.
+  proxy:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.caddy
+    environment:
+      TWT_CSP_CONNECT_SRC: ${TWT_CSP_CONNECT_SRC:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/healthz || exit 1"]
+      interval: 30s
+      timeout: 3s
+      start_period: 3s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  twt_pgdata:

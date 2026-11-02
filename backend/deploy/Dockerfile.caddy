@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+# Shared Caddy image for the compose proxy and the optional TLS edge.
+#
+# The upstream image grants cap_net_bind_service to /usr/bin/caddy, so :80 and
+# :443 work as a non-root user. /data and /config are chowned here so named
+# volumes created from this image are writable by that user as well.
+#
+# Base image pinned by digest; refresh with:
+#   docker buildx imagetools inspect caddy:2.11-alpine
+
+FROM caddy:2.11-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
+
+RUN addgroup -S -g 10001 app \
+    && adduser -S -D -H -u 10001 -G app -s /sbin/nologin app \
+    && chown -R app:app /data /config
+
+USER app

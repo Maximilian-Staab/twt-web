@@ -1,0 +1,34 @@
+# Local development overrides. Layer on the base stack:
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+#   docker compose -f compose.yaml -f compose.dev.yaml down -v
+#
+# Differences from the base stack:
+#   - default database password "twt-dev"
+#   - static dev JWKS bound from ./dev (generate it with ./dev/gen-dev-keys.sh)
+#   - direct API published on 127.0.0.1:9080 for CLI/plugin clients
+#
+# backend/.env is optional here and can still override the values below; the
+# compose interpolation defaults keep a fresh clone working.
+
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-twt-dev}
+
+  api:
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://twt:${POSTGRES_PASSWORD:-twt-dev}@postgres:5432/twt_cloud
+      # Dev issuer/audience and the bind-mounted JWKS. OAUTH_JWKS_URL in .env
+      # wins over the file, so a real IdP needs no change to this file.
+      OAUTH_ISSUER_URL: ${OAUTH_ISSUER_URL:-https://dev-idp.example.com}
+      OAUTH_AUDIENCE: ${OAUTH_AUDIENCE:-twt-api}
+      OAUTH_JWKS_FILE: ${OAUTH_JWKS_FILE:-/app/jwks/jwks.json}
+      I_ACCEPT_DEV_JWKS: "1"
+    volumes:
+      - ./dev:/app/jwks:ro
+    ports:
+      - "127.0.0.1:9080:8080"

@@ -1,0 +1,1330 @@
+openapi: 3.1.0
+info:
+  title: TrackWorkTime Cloud Storage Backend
+  version: 1.0.0
+  summary: >-
+    Multi-client sync backend for the TrackWorkTime Android app: events, tasks,
+    targets, preferences, plus a change-log based sync protocol.
+  description: |
+    REST API for a cloud storage backend of
+    [TrackWorkTime](https://codeberg.org/mathisdt/trackworktime).
+
+    The server is a pure storage backend: it stores and synchronizes the app's own
+    records (events, tasks, targets, preferences); it never computes worked time.
+
+    **Authentication.** The API is an OAuth 2.0 Resource Server. All endpoints except
+    `/healthz` and `/config` require a valid OIDC access token (JWT) in the
+    `Authorization` header with scheme `Bearer`. The token MUST be issued by the
+    configured OIDC provider and carry the audience configured for this API.
+    Tokens carry the scopes the deployment configures (`GET /config` advertises
+    `openid`, `profile`, `offline_access`); the server decodes `scope` but does not
+    enforce it — the audience check is the access-control gate.
+
+    **Data model.** Field names and units mirror the app's SQLite schema
+    (`MySQLiteHelper`, DATABASE_VERSION 6):
+
+    * event `time` — epoch **seconds**; `zoneOffset` — UTC offset in **minutes**
+      (source: `DAO.eventToContentValues`, `DAO.cursorToEvent`).
+    * target `value` — target work time in **minutes** (source: `DAO` flex migration,
+      `TimeCalculatorV2.calculateTargetTime`).
+    * event `type` — `CLOCK_IN` or `CLOCK_OUT` only. `CLOCK_OUT_NOW` is a
+      client-synthesized value and is never accepted (`TypeEnum`).
+    * target `type` — one of `DAY_SET`, `DAY_GRANT`, `DAY_IGNORE`, `FLEXI_SET`,
+      `FLEXI_ADD` (`TargetEnum`).
+
+    **Versioning.** Breaking changes get a new `/api/vN` prefix; additive changes
+    within a version are allowed.
+
+    **Errors.** All error responses use RFC 9457 `application/problem+json` with the
+    `type`, `title`, `status`, `detail` members.
+  license:
+    name: GPL-3.0-or-later
+    url: https://www.gnu.org/licenses/gpl-3.0.html
+servers:
+  - url: https://twt-cloud.example.com/api/v1
+    description: Production
+  - url: http://localhost:8080/api/v1
+    description: Local development
+security:
+  - bearerAuth: []
+tags:
+  - name: health
+    description: Liveness probe (unauthenticated).
+  - name: config
+    description: Unauthenticated OAuth bootstrap configuration.
+  - name: identity
+    description: The authenticated user.
+  - name: clients
+    description: Device registrations. Multiple clients per user are supported.
+  - name: tasks
+    description: Task list for categorizing events; deletes are tombstones.
+  - name: events
+    description: Clock-in/clock-out events (epoch seconds plus zone offset).
+  - name: targets
+    description: Target work times (day grants, flexi adjustments).
+  - name: preferences
+    description: Key/value settings synced across a user's clients.
+  - name: sync
+    description: Change-log based delta sync between a user's clients.
+  - name: backup
+    description: CSV import/export byte-compatible with the app's backup format.
+  - name: snapshot
+    description: Full-state JSON export/import.
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      security: []
+      operationId: getHealth
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: Service is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+              example: { "status": "ok" }
+
+  /config:
+    get:
+      tags: [config]
+      summary: OAuth bootstrap configuration
+      description: >-
+        Unauthenticated. Lets the client boot its login from the backend URL alone:
+        fetch this document, run OIDC discovery on `issuer` (`issuer +
+        ".well-known/openid-configuration"`, the issuer always ends with a slash),
+        then run the Authorization Code + PKCE flow via the system browser
+        (Custom Tab) with `clientId` and `scopes`.
+      security: []
+      operationId: getConfig
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: OAuth bootstrap configuration.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthConfig" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /oidc-config:
+    get:
+      tags: [config]
+      summary: OIDC discovery document (server-side proxy)
+      description: >-
+        Unauthenticated. Fetches `<issuer>/.well-known/openid-configuration`
+        server-side and returns it unchanged. Intended for browser clients,
+        because an IdP does not necessarily send CORS headers on its discovery
+        document (authentik, for example, does not). The issuer is taken from
+        server configuration; the request cannot redirect the fetch.
+      security: []
+      operationId: getOidcConfig
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: The provider's OpenID Connect discovery document.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        default: { $ref: "#/components/responses/problem" }
+
+  /oauth/token:
+    post:
+      tags: [config]
+      summary: OAuth token exchange/refresh relay
+      description: >-
+        Unauthenticated. Forwards an authorization-code or refresh-token grant
+        to the token endpoint discovered from the configured issuer and
+        returns the provider's response unchanged. Browser clients use it
+        because IdPs do not necessarily allow CORS on their token endpoint.
+        Only the public client configured in `OAUTH_CLIENT_ID` is accepted;
+        the upstream URL comes from server-side discovery, never from the
+        request.
+      security: []
+      operationId: postOAuthToken
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, client_id]
+              properties:
+                grant_type:
+                  type: string
+                  enum: [authorization_code, refresh_token]
+                client_id:
+                  type: string
+                code:
+                  type: string
+                  description: Required for `authorization_code`.
+                code_verifier:
+                  type: string
+                  description: Required for `authorization_code` (PKCE).
+                redirect_uri:
+                  type: string
+                  description: Required for `authorization_code`.
+                refresh_token:
+                  type: string
+                  description: Required for `refresh_token`.
+            example:
+              grant_type: authorization_code
+              client_id: twt-app
+              code: 0d4c1a2e...
+              code_verifier: dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+              redirect_uri: http://127.0.0.1:5173/
+      responses:
+        "200":
+          description: The provider's token response (access/refresh/id token).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: The provider rejected the grant (OAuth error object).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        default: { $ref: "#/components/responses/problem" }
+
+  /me:
+    get:
+      tags: [identity]
+      summary: Identity of the access-token subject
+      operationId: getMe
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: The authenticated user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /clients:
+    get:
+      tags: [clients]
+      summary: List registered clients of the user
+      operationId: listClients
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: All non-revoked clients of the user.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Client" }
+        default: { $ref: "#/components/responses/problem" }
+    post:
+      tags: [clients]
+      summary: Register a new client (device)
+      description: >-
+        Registers the calling device as a sync client. The returned `clientId` is
+        stable for the lifetime of the registration and MUST be sent with every
+        `/sync/push` batch.
+      operationId: createClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientCreate" }
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "201":
+          description: Client registered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Client" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /clients/{clientId}:
+    parameters:
+      - $ref: "#/components/parameters/clientId"
+    delete:
+      tags: [clients]
+      summary: Revoke a client registration
+      description: >-
+        Marks the client revoked. Subsequent pushes from it are rejected with 403.
+        The revocation is recorded in the change log so other devices learn the
+        client is gone.
+      operationId: revokeClient
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "204": { description: Client revoked. }
+        default: { $ref: "#/components/responses/problem" }
+
+  /tasks:
+    get:
+      tags: [tasks]
+      summary: List tasks
+      operationId: listTasks
+      parameters:
+        - $ref: "#/components/parameters/includeDeleted"
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: Tasks of the user.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Task" }
+        default: { $ref: "#/components/responses/problem" }
+    post:
+      tags: [tasks]
+      summary: Create a task
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskUpsert" }
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "201":
+          description: Task created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /tasks/{taskId}:
+    parameters:
+      - $ref: "#/components/parameters/taskId"
+    get:
+      tags: [tasks]
+      summary: Fetch one task
+      operationId: getTask
+      responses:
+        "200":
+          description: The task.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "404": { $ref: "#/components/responses/notFound" }
+        default: { $ref: "#/components/responses/problem" }
+    patch:
+      tags: [tasks]
+      summary: Update a task (partial)
+      operationId: updateTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskUpsert" }
+      responses:
+        "200":
+          description: Updated task.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "404": { $ref: "#/components/responses/notFound" }
+        "412": { $ref: "#/components/responses/preconditionFailed" }
+        default: { $ref: "#/components/responses/problem" }
+    delete:
+      tags: [tasks]
+      summary: Delete a task
+      description: >-
+        Soft-deletes the task (tombstone). Events referencing the task keep their
+        reference — mirroring `DAO.deleteTask`, which performs no cascade. A delete
+        is itself a change with an `updatedAt`; a later edit with a newer
+        `updatedAt` resurrects the row.
+      operationId: deleteTask
+      parameters:
+        - $ref: "#/components/parameters/updatedAt"
+      responses:
+        "204": { description: Task deleted. }
+        "404": { $ref: "#/components/responses/notFound" }
+        "412": { $ref: "#/components/responses/preconditionFailed" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /events:
+    get:
+      tags: [events]
+      summary: List events
+      operationId: listEvents
+      parameters:
+        - $ref: "#/components/parameters/from"
+        - $ref: "#/components/parameters/to"
+        - $ref: "#/components/parameters/includeDeleted"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/offset"
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: >-
+            Events of the user, ordered by `(time, insertionSeq)` ascending —
+            the same order the app reads them (`ORDER BY time, _id`), so
+            same-timestamp ties keep the app's insertion order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Event" }
+        default: { $ref: "#/components/responses/problem" }
+    post:
+      tags: [events]
+      summary: Create an event
+      operationId: createEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EventUpsert" }
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "201":
+          description: Event created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /events/{eventId}:
+    parameters:
+      - $ref: "#/components/parameters/eventId"
+    get:
+      tags: [events]
+      summary: Fetch one event
+      operationId: getEvent
+      responses:
+        "200":
+          description: The event.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "404": { $ref: "#/components/responses/notFound" }
+        default: { $ref: "#/components/responses/problem" }
+    patch:
+      tags: [events]
+      summary: Update an event (partial)
+      operationId: updateEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EventUpsert" }
+      responses:
+        "200":
+          description: Updated event.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "404": { $ref: "#/components/responses/notFound" }
+        "412": { $ref: "#/components/responses/preconditionFailed" }
+        default: { $ref: "#/components/responses/problem" }
+    delete:
+      tags: [events]
+      summary: Delete an event
+      operationId: deleteEvent
+      parameters:
+        - $ref: "#/components/parameters/updatedAt"
+      responses:
+        "204": { description: Event deleted. }
+        "404": { $ref: "#/components/responses/notFound" }
+        "412": { $ref: "#/components/responses/preconditionFailed" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /targets:
+    get:
+      tags: [targets]
+      summary: List targets
+      operationId: listTargets
+      parameters:
+        - $ref: "#/components/parameters/from"
+        - $ref: "#/components/parameters/to"
+        - $ref: "#/components/parameters/includeDeleted"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/offset"
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: >-
+            Targets of the user, ordered by `date` ascending. Bounded by
+            `limit` (default 500, max 1000) and `offset`. Clients that need the
+            full history must page until a short page is returned.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Target" }
+        default: { $ref: "#/components/responses/problem" }
+    post:
+      tags: [targets]
+      summary: Create a target
+      operationId: createTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TargetUpsert" }
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "201":
+          description: Target created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Target" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /targets/{targetId}:
+    parameters:
+      - $ref: "#/components/parameters/targetId"
+    get:
+      tags: [targets]
+      summary: Fetch one target
+      operationId: getTarget
+      responses:
+        "200":
+          description: The target.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Target" }
+        "404": { $ref: "#/components/responses/notFound" }
+        default: { $ref: "#/components/responses/problem" }
+    patch:
+      tags: [targets]
+      summary: Update a target (partial)
+      operationId: updateTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TargetUpsert" }
+      responses:
+        "200":
+          description: Updated target.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Target" }
+        "404": { $ref: "#/components/responses/notFound" }
+        "412": { $ref: "#/components/responses/preconditionFailed" }
+        default: { $ref: "#/components/responses/problem" }
+    delete:
+      tags: [targets]
+      summary: Delete a target
+      operationId: deleteTarget
+      parameters:
+        - $ref: "#/components/parameters/updatedAt"
+      responses:
+        "204": { description: Target deleted. }
+        "404": { $ref: "#/components/responses/notFound" }
+        "412": { $ref: "#/components/responses/preconditionFailed" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /preferences:
+    get:
+      tags: [preferences]
+      summary: List all preference values of the user
+      operationId: listPreferences
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: Preference key/value pairs.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: "#/components/schemas/PreferenceValue"
+        default: { $ref: "#/components/responses/problem" }
+
+  /preferences/{key}:
+    parameters:
+      - $ref: "#/components/parameters/prefKey"
+    put:
+      tags: [preferences]
+      summary: Set one preference value (LWW per key)
+      operationId: putPreference
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PreferenceValue" }
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: Stored value.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PreferenceValue" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /sync/changes:
+    get:
+      tags: [sync]
+      summary: Pull changes since a cursor
+      description: |-
+        Returns the user's change-log entries with `seq` strictly greater than
+        `cursor`, oldest first. `cursor=0` replays the full history (initial sync).
+
+        Tombstoned deletes older than the retention window are purged; if the
+        requested cursor predates the oldest retained change, the server responds
+        `410 Gone` and the client must re-baseline (full pull or `/export`).
+      operationId: getChanges
+      parameters:
+        - name: cursor
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+        - $ref: "#/components/parameters/limit"
+      responses:
+        "200":
+          description: A page of changes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangePage" }
+        "410":
+          description: Cursor too old (history purged); re-baseline.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Problem" }
+              example:
+                type: https://twt-cloud.example.com/problems/cursor-expired
+                title: Sync cursor expired
+                status: 410
+                detail: The requested cursor predates the retained change history.
+        default: { $ref: "#/components/responses/problem" }
+
+  /sync/push:
+    post:
+      tags: [sync]
+      summary: Push a batch of mutations
+      description: |-
+        Applies a batch of client-originated mutations. Each operation is
+        idempotent per `(clientId, opId)`: replays are answered with
+        `duplicate` and cause no state change.
+
+        Per-operation outcomes:
+
+        * `applied` — stored, change-log entry written.
+        * `duplicate` — opId already processed for this client.
+        * `ignoredStale` — stored `updatedAt` is newer; the operation lost LWW.
+          The current server row is returned in `current` for reconciliation.
+        * `rejected` — validation failed (e.g. `CLOCK_OUT_NOW`, negative `time`);
+          remaining operations still apply.
+
+        `delete` operations are not staleness-guarded: they apply regardless
+        of the stored row's `updatedAt` and stamp the row with the op's
+        `updatedAt` (server `now` when absent), so a stale delete can
+        tombstone a newer row; a later upsert with a newer `updatedAt`
+        resurrects it.
+
+        A push from an active client also refreshes that client's `lastSeenAt`.
+
+        The response also returns the user's current change-log cursor, which the
+        client SHOULD persist before pulling.
+      operationId: pushBatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PushRequest" }
+            example:
+              clientId: 3f2b8c46-1d5e-4f7a-9c3b-2a8e5d7f0b21
+              operations:
+                - opId: e58f4b2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f
+                  entity: event
+                  op: upsert
+                  data:
+                    id: 0d4c1a2e-7b3f-4c8e-9d2a-1f2e3d4c5b6a
+                    time: 1759600800
+                    zoneOffset: 120
+                    type: CLOCK_IN
+                    task: 9a8b7c6d-5e4f-3a2b-1c0d-9e8f7a6b5c4d
+                    comment: null
+                    updatedAt: "2026-10-05T07:12:00Z"
+      responses:
+        "200":
+          description: Per-operation results, aligned with request order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PushResponse" }
+        "413":
+          description: >-
+            Batch too large: more than 1000 operations or body larger than 1 MiB.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /sync/state:
+    get:
+      tags: [sync]
+      summary: Current cursor and client bookkeeping
+      operationId: getSyncState
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: Sync state for the calling user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SyncState" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /backup/events:
+    get:
+      tags: [backup]
+      summary: Export events as the app's backup CSV
+      description: >-
+        Streams the exact format produced by `DAO.backupEventsToWriter`: header
+        `type;time;task;comment;taskId;name;active;ordering;isdefault`, one row
+        per event (joined with its task) and one row per task without events,
+        `ISO_OFFSET_DATE_TIME` timestamps, localized `in`/`out` type names,
+        `;`-separated.
+      operationId: exportEventsCsv
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: Events backup CSV (text/csv).
+          content:
+            text/csv:
+              schema: { type: string }
+              example: |
+                type;time;task;comment;taskId;name;active;ordering;isdefault
+                in;2026-10-05T07:12:00+02:00;;started work;1;Project A;1;0;0
+                out;2026-10-05T16:30:00+02:00;;;1;Project A;1;0;0
+        default: { $ref: "#/components/responses/problem" }
+    put:
+      tags: [backup]
+      summary: Import events from the app's backup CSV
+      description: >-
+        Parses a CSV in the app's backup format (`DAO.restoreEventsFromReader`)
+        and upserts the rows. Tasks referenced by imported events are created on
+        demand, exactly like the app's restore path.
+      operationId: importEventsCsv
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema: { type: string }
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: Import summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportResult" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /backup/targets:
+    get:
+      tags: [backup]
+      summary: Export targets as the app's backup CSV
+      description: >-
+        Streams the format produced by `DAO.backupTargetsToWriter`: header
+        `time;type;value;comment`, `yyyy-MM-dd` dates, readable target type names
+        (`day-set`, `day-grant`, `day-ignore`, `flexi-set`, `flexi-add`).
+      operationId: exportTargetsCsv
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: Targets backup CSV (text/csv).
+          content:
+            text/csv:
+              schema: { type: string }
+              example: |
+                time;type;value;comment
+                2026-10-05;day-set;480;
+        default: { $ref: "#/components/responses/problem" }
+    put:
+      tags: [backup]
+      summary: Import targets from the app's backup CSV
+      operationId: importTargetsCsv
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema: { type: string }
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: Import summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportResult" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /backup/preferences:
+    get:
+      tags: [backup]
+      summary: Export preferences as the app's backup CSV
+      description: >-
+        Streams the format produced by `PreferencesUtil.writePreferences`: lines of
+        `key;type;value` with types `string`, `stringset`, `boolean`, `integer`,
+        `float`, `long`.
+      operationId: exportPreferencesCsv
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: Preferences backup CSV (text/csv).
+          content:
+            text/csv:
+              schema: { type: string }
+              example: |
+                key;type;value
+                flexiTimeEnabledAtStart;boolean;true
+        default: { $ref: "#/components/responses/problem" }
+    put:
+      tags: [backup]
+      summary: Import preferences from the app's backup CSV
+      operationId: importPreferencesCsv
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema: { type: string }
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: Import summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportResult" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /export:
+    get:
+      tags: [snapshot]
+      summary: Export the user's full state as JSON
+      operationId: exportAll
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: Full snapshot (tasks, events, targets, preferences).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Snapshot" }
+        default: { $ref: "#/components/responses/problem" }
+
+  /import:
+    put:
+      tags: [snapshot]
+      summary: Import a full-state JSON snapshot
+      description: >-
+        Upserts every contained entity (LWW per entity). Intended for migration
+        and device re-baselining.
+      operationId: importAll
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Snapshot" }
+      responses:
+        "4XX": { $ref: "#/components/responses/problem" }
+        "200":
+          description: Import summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportResult" }
+        default: { $ref: "#/components/responses/problem" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        OIDC access token (JWT) from the configured provider. The server validates
+        `iss`, `aud`, `exp`, `nbf` (30 s skew allowance) and the signature against
+        the issuer's JWKS. The `scope` claim is decoded but not enforced; the `aud`
+        check is the access-control gate.
+
+  parameters:
+    clientId:
+      name: clientId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    taskId:
+      name: taskId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    eventId:
+      name: eventId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    targetId:
+      name: targetId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    prefKey:
+      name: key
+      in: path
+      required: true
+      schema: { type: string }
+      description: Preference key, e.g. `flexiTimeEnabledAtStart`.
+    includeDeleted:
+      name: includeDeleted
+      in: query
+      schema: { type: boolean, default: false }
+      description: Include soft-deleted (tombstoned) rows.
+    limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 1000, default: 500 }
+      description: Page size.
+    offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+      description: Pagination offset for the returned list.
+    from:
+      name: from
+      in: query
+      schema: { type: string, format: date-time }
+      description: >-
+        Inclusive lower bound on event `time` (epoch seconds) / target `date`.
+    to:
+      name: to
+      in: query
+      schema: { type: string, format: date-time }
+      description: >-
+        Exclusive upper bound on event `time` (epoch seconds) / target `date`.
+    updatedAt:
+      name: updatedAt
+      in: query
+      required: false
+      schema: { type: string, format: date-time }
+      description: >-
+        LWW precondition: the delete only takes effect if the stored row's
+        `updatedAt` is not newer.
+
+  responses:
+    problem:
+      description: RFC 9457 problem details.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    notFound:
+      description: Entity not found (or not owned by the caller).
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          example:
+            type: https://twt-cloud.example.com/problems/not-found
+            title: Not found
+            status: 404
+    preconditionFailed:
+      description: >-
+        LWW precondition failed — the stored row is newer than the precondition.
+        Retry after pulling changes.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          example:
+            type: https://twt-cloud.example.com/problems/stale-write
+            title: Stale write
+            status: 412
+            detail: The stored updatedAt is newer than the precondition.
+
+  schemas:
+    User:
+      type: object
+      required: [sub, createdAt]
+      properties:
+        sub:
+          type: string
+          description: OIDC subject (`sub` claim).
+        createdAt:
+          type: string
+          format: date-time
+
+    Client:
+      type: object
+      required: [clientId, label, createdAt, lastSeenAt]
+      properties:
+        clientId:
+          type: string
+          format: uuid
+        label:
+          type: string
+          description: User-chosen device label, e.g. "Pixel 8".
+        createdAt:
+          type: string
+          format: date-time
+        lastSeenAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: [string, "null"]
+          format: date-time
+          description: Set once the client was revoked via `DELETE /clients/{clientId}`.
+
+    ClientCreate:
+      type: object
+      required: [label]
+      properties:
+        label:
+          type: string
+          minLength: 1
+          maxLength: 100
+
+    AuthConfig:
+      type: object
+      required: [issuer, clientId, scopes, flow]
+      properties:
+        issuer:
+          type: string
+          format: uri
+          description: >-
+            The OIDC issuer URL (backend env `OAUTH_ISSUER_URL`). The client uses it
+            for OIDC discovery: `<issuer>/.well-known/openid-configuration` — the
+            issuer ends with `/`, so the discovery URL is
+            `issuer + ".well-known/openid-configuration"`.
+        clientId:
+          type: string
+          description: >-
+            The OAuth public client id the app should use in the authorization
+            request (backend env `OAUTH_CLIENT_ID`; may be empty in dev).
+        scopes:
+          type: array
+          items: { type: string }
+          default: [openid, profile, offline_access]
+          description: >-
+            The scope list the client should request (backend env `OAUTH_SCOPES`,
+            default `openid,profile,offline_access`).
+        flow:
+          type: string
+          enum: [authorization_code_pkce]
+          description: >-
+            Tells the client which OAuth flow to run; constant
+            `authorization_code_pkce`.
+        tokenProxy:
+          type: boolean
+          default: false
+          description: >-
+            When true, browser clients should send the token exchange and
+            refresh grant to `POST /oauth/token` instead of the IdP token
+            endpoint (which may not allow CORS).
+      example:
+        issuer: https://auth.example.com/application/o/twt/
+        clientId: IaBPbFF61puCOnWGrZ0O4p8mvgGT0YPkZbrgxvIihp
+        scopes: [openid, profile, offline_access]
+        flow: authorization_code_pkce
+
+    Task:
+      allOf:
+        - $ref: "#/components/schemas/BaseEntity"
+        - type: object
+          properties:
+            name:
+              type: string
+            active:
+              type: boolean
+            ordering:
+              type: [integer, "null"]
+            isDefault:
+              type: boolean
+
+    TaskUpsert:
+      type: object
+      properties:
+        name: { type: string }
+        active: { type: boolean }
+        ordering: { type: [integer, "null"] }
+        isDefault: { type: boolean }
+        updatedAt:
+          type: string
+          format: date-time
+          description: >-
+            LWW timestamp. Absent on create (server stamps the row); on update,
+            an `updatedAt` older than the stored one fails with 412 unless the
+            caller forces the write.
+
+    Event:
+      allOf:
+        - $ref: "#/components/schemas/BaseEntity"
+        - type: object
+          properties:
+            time:
+              type: integer
+              format: int64
+              description: Epoch seconds.
+            zoneOffset:
+              type: integer
+              description: UTC offset in minutes.
+            type:
+              $ref: "#/components/schemas/EventType"
+            task:
+              type: [string, "null"]
+              format: uuid
+            comment:
+              type: [string, "null"]
+
+    EventUpsert:
+      type: object
+      required: [time, zoneOffset, type]
+      properties:
+        time:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Epoch seconds.
+        zoneOffset:
+          type: integer
+          minimum: -1440
+          maximum: 1440
+          description: UTC offset in minutes.
+        type:
+          $ref: "#/components/schemas/EventType"
+        task:
+          type: [string, "null"]
+          format: uuid
+        comment:
+          type: [string, "null"]
+        updatedAt:
+          type: string
+          format: date-time
+
+    Target:
+      allOf:
+        - $ref: "#/components/schemas/BaseEntity"
+        - type: object
+          properties:
+            date:
+              type: string
+              format: date
+            type:
+              $ref: "#/components/schemas/TargetType"
+            value:
+              type: [integer, "null"]
+              description: Target work time in minutes.
+            comment:
+              type: [string, "null"]
+
+    TargetUpsert:
+      type: object
+      required: [date, type]
+      properties:
+        date: { type: string, format: date }
+        type:
+          $ref: "#/components/schemas/TargetType"
+        value:
+          type: [integer, "null"]
+          description: Target work time in minutes.
+        comment:
+          type: [string, "null"]
+        updatedAt:
+          type: string
+          format: date-time
+
+    EventType:
+      type: string
+      enum: [CLOCK_IN, CLOCK_OUT]
+      description: >-
+        `CLOCK_OUT_NOW` is client-synthesized in the app and never stored or
+        accepted here (`TypeEnum.CLOCK_OUT_NOW_VALUE = -1` is rejected).
+
+    TargetType:
+      type: string
+      enum: [DAY_SET, DAY_GRANT, DAY_IGNORE, FLEXI_SET, FLEXI_ADD]
+      description: >-
+        Numeric DB values from `TargetEnum.Values`; the CSV names (`day-set`, …)
+        map to these constants.
+
+    BaseEntity:
+      type: object
+      required: [id, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        updatedAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type: [string, "null"]
+          format: date-time
+
+    PreferenceValue:
+      oneOf:
+        - type: string
+        - type: boolean
+        - type: integer
+        - type: number
+        - type: array
+          items: { type: string }
+      description: >-
+        Typed value mirroring the app's preference CSV types (`string`, `boolean`,
+        `integer`, `float`, `long`; `stringset` becomes an array of strings).
+
+    ChangeRecord:
+      type: object
+      required: [seq, entity, id, op, occurredAt]
+      properties:
+        seq:
+          type: integer
+          format: int64
+        entity:
+          type: string
+          enum: [task, event, target, preference, client]
+        id:
+          type: string
+          description: Entity id (UUID) or preference key.
+        op:
+          type: string
+          enum: [upsert, delete]
+        data:
+          description: Full entity payload for `upsert`; absent for `delete`.
+        origin:
+          type: [string, "null"]
+          format: uuid
+          description: The clientId (UUID) that produced the change.
+        occurredAt:
+          type: string
+          format: date-time
+
+    ChangePage:
+      type: object
+      required: [changes, cursor, hasMore]
+      properties:
+        changes:
+          type: array
+          items: { $ref: "#/components/schemas/ChangeRecord" }
+        cursor:
+          type: integer
+          format: int64
+          description: >-
+            Pass this value as `cursor` on the next call. When `hasMore` is false,
+            this equals the latest `seq` and the client is up to date.
+        hasMore:
+          type: boolean
+
+    SyncState:
+      type: object
+      required: [cursor, clients]
+      properties:
+        cursor:
+          type: integer
+          format: int64
+          description: The user's current change-log head.
+        clients:
+          type: array
+          items:
+            type: object
+            required: [clientId, lastSeenAt]
+            properties:
+              clientId: { type: string, format: uuid }
+              lastSeenAt: { type: string, format: date-time }
+
+    PushRequest:
+      type: object
+      required: [clientId, operations]
+      properties:
+        clientId:
+          type: string
+          format: uuid
+        operations:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: "#/components/schemas/PushOperation"
+
+    PushOperation:
+      type: object
+      required: [opId, entity, op]
+      properties:
+        opId:
+          type: string
+          format: uuid
+          description: Client-generated; idempotency key scoped to `clientId`.
+        entity:
+          type: string
+          enum: [task, event, target, preference]
+        op:
+          type: string
+          enum: [upsert, delete]
+        data:
+          description: Entity fields; interpretation per `entity`.
+
+    PushResponse:
+      type: object
+      required: [results, cursor]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            required: [opId, result]
+            properties:
+              opId: { type: string, format: uuid }
+              result:
+                type: string
+                enum: [applied, duplicate, ignoredStale, rejected]
+              current:
+                description: >-
+                  Current server row for `ignoredStale`/`rejected` reconciliation.
+              reason:
+                type: [string, "null"]
+                description: Rejection reason, human-readable.
+        cursor:
+          type: integer
+          format: int64
+          description: The user's change-log head after applying the batch.
+
+    Snapshot:
+      type: object
+      properties:
+        tasks:
+          type: array
+          items: { $ref: "#/components/schemas/Task" }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/Event" }
+        targets:
+          type: array
+          items: { $ref: "#/components/schemas/Target" }
+        preferences:
+          type: object
+          additionalProperties: true
+
+    ImportResult:
+      type: object
+      required: [imported, skipped]
+      properties:
+        imported:
+          type: integer
+          description: Rows applied or updated.
+        skipped:
+          type: integer
+          description: Rows rejected (validation) or unchanged.
+
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: Problem type identifier.
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri

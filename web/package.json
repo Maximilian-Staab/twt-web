@@ -1,0 +1,14 @@
+{
+  "name": "twt-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Build-free browser frontend for the twt-cloud backend",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

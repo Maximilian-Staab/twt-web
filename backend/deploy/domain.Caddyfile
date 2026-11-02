@@ -1,0 +1,20 @@
+# Optional TLS edge for a real domain.
+#
+# Enable with:
+#   TWT_DOMAIN=twt.example.com docker compose \
+#     -f compose.yaml -f compose.prod.yaml up -d --build
+#
+# Caddy obtains and renews the certificate automatically and redirects HTTP to
+# HTTPS. The internal proxy (proxy:80) still owns the app CSP and headers;
+# this edge only adds HSTS and forwards the public URL.
+#
+# Do not enable the tls service if another reverse proxy already owns 80/443;
+# point that proxy at 127.0.0.1:8080 instead.
+
+{$TWT_DOMAIN:twt.example.com} {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	reverse_proxy proxy:80
+}

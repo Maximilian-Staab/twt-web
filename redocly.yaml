@@ -1,0 +1,14 @@
+# Lint configuration for docs/openapi.yaml (Redocly CLI, OpenAPI 3.1).
+#
+# The recommended ruleset is the gate: errors fail CI
+# (.github/workflows/openapi-lint.yaml), warnings are reported but tolerated.
+# Rule changes belong here, not in the workflow, so local runs behave the same:
+#
+#   npx @redocly/cli lint docs/openapi.yaml
+extends:
+  - recommended
+
+rules:
+  # Deployment-specific hostnames (twt-cloud.example.com) are intentional: the
+  # server URL is operator configuration, not part of the contract.
+  no-server-example.com: off
