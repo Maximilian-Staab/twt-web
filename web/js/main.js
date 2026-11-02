@@ -18,7 +18,7 @@ import {
 } from "./format.js";
 import {
     API_BASE_KEY,
-    DEFAULT_API_BASE,
+    defaultApiBase,
     engineSettings,
     loadSettings,
 } from "./settings.js";
@@ -47,7 +47,7 @@ let refreshPromise = null;
 let refreshTimer = null;
 
 const state = {
-    apiBase: DEFAULT_API_BASE,
+    apiBase: defaultApiBase(),
     settings: loadSettings(),
     tasks: [],
     events: [],
@@ -220,7 +220,7 @@ function renderLogin(message = "") {
                 <label>Backend URL
                     <input id="api-base" type="url" spellcheck="false"
                            value="${escapeHtml(state.apiBase)}"
-                           placeholder="http://localhost:8080/api/v1">
+                           placeholder="${escapeHtml(defaultApiBase())}">
                     <span class="hint">Server root or a URL ending in /api/v1.</span>
                 </label>
                 <button id="signin" class="btn primary wide">Sign in</button>
@@ -542,9 +542,9 @@ function handleError(error) {
 
 function readStoredApiBase() {
     try {
-        return normalizeApiBase(localStorage.getItem(API_BASE_KEY) || DEFAULT_API_BASE);
+        return normalizeApiBase(localStorage.getItem(API_BASE_KEY) || defaultApiBase());
     } catch {
-        return DEFAULT_API_BASE;
+        return defaultApiBase();
     }
 }
 

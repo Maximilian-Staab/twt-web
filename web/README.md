@@ -84,12 +84,13 @@ certificates + HSTS); see
 [`backend/README.md`](../backend/README.md#real-domain). Register
 `https://twt.example.com/` as the redirect URI.
 
-In the login form, enter the backend URL — the server root
-(`http://localhost:8080`) or the API base (`http://localhost:8080/api/v1`).
-For a public deployment, enter `https://twt.example.com` or
-`https://twt.example.com/api/v1`; the built-in default is the local compose
-URL. For the standalone dev server on 5173, use the devenv API
-(`http://localhost:8080/api/v1`) and its CORS defaults.
+The login form pre-fills the backend URL with `<page origin>/api/v1`, so a
+same-origin deployment (compose proxy, TLS terminator, Pangolin) needs no
+input. Enter the server root (`https://twt.example.com`) or any API base
+(`https://twt.example.com/api/v1`) to point the page elsewhere; the value is
+stored. The one exception is the standalone dev server on 5173, whose default
+stays the devenv API (`http://localhost:8080/api/v1`) and its CORS defaults —
+that page origin has no API of its own.
 
 To offer a backend in one link, pass `api` as a query parameter — useful when
 the page is served locally but the API is remote:
