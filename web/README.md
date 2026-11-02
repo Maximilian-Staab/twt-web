@@ -37,6 +37,12 @@ step and no runtime dependency (plain ES modules).
 ### Docker
 
 ```sh
+# prebuilt (published by CI for amd64 and arm64)
+docker run -d --name twt-web -p 127.0.0.1:5173:80 \
+  -e TWT_CSP_CONNECT_SRC='http://localhost:* http://127.0.0.1:*' \
+  ghcr.io/maximilian-staab/twt-web:latest
+
+# or build it yourself
 docker build -t twt-web web
 docker run -d --name twt-web -p 127.0.0.1:5173:80 \
   -e TWT_CSP_CONNECT_SRC='http://localhost:* http://127.0.0.1:*' twt-web

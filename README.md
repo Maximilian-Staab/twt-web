@@ -50,6 +50,19 @@ docker compose -f compose.yaml -f compose.dev.yaml up -d --build
 curl -s http://localhost:8080/api/v1/healthz   # {"status":"ok"}
 ```
 
+A deployment does not build anything: CI publishes multi-arch images
+(`ghcr.io/<owner>/{twt-cloud,twt-web,twt-proxy}`, amd64 + arm64) and compose
+pulls them. Copy `.env.example` to `.env`, set the required values, then:
+
+```sh
+cd backend
+docker compose -f compose.yaml -f compose.prod.yaml pull
+docker compose -f compose.yaml -f compose.prod.yaml up -d
+```
+
+Pin `TWT_IMAGE_TAG` (e.g. `v1.0.0`) instead of tracking `latest`, and set
+`TWT_IMAGE_PREFIX` when pulling from a fork's registry.
+
 Compose is split by environment. `compose.dev.yaml` adds the dev JWKS mount
 and the direct API on `127.0.0.1:9080/api/v1`; `compose.prod.yaml` adds the
 TLS edge and requires real IdP values. The base stack keeps the same-origin
@@ -128,8 +141,9 @@ npx --yes @redocly/cli lint docs/openapi.yaml   # from the repo root
 
 CI (`.github/workflows/`) runs `backend-tests`, `web-tests`, `docker` (builds
 all images and boots the dev stack), `openapi-lint` and `secret-scan` on every
-push and pull request; `docker-publish` pushes `ghcr.io/<owner>/twt-cloud` on
-`main` and `v*` tags. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+push and pull request; `docker-publish` pushes the multi-arch
+`ghcr.io/<owner>/{twt-cloud,twt-web,twt-proxy}` images on `main` and `v*` tags.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 

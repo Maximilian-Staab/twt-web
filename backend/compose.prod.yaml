@@ -1,6 +1,9 @@
-# Production overrides. Layer on the base stack:
+# Production overrides. Layer on the base stack and pull the prebuilt images:
 #
-#   docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+#   docker compose -f compose.yaml -f compose.prod.yaml pull
+#   docker compose -f compose.yaml -f compose.prod.yaml up -d
+#
+# Add `--build` instead of `pull` only when deploying from source.
 #
 # Requires backend/.env (or exported variables) with at least:
 #   POSTGRES_PASSWORD, OAUTH_ISSUER_URL, OAUTH_AUDIENCE, OAUTH_JWKS_URL,
@@ -31,6 +34,7 @@ services:
       OAUTH_JWKS_URL: ${OAUTH_JWKS_URL:?set OAUTH_JWKS_URL in backend/.env}
 
   tls:
+    image: ${TWT_IMAGE_PREFIX:-ghcr.io/maximilian-staab}/twt-proxy:${TWT_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: deploy/Dockerfile.caddy
