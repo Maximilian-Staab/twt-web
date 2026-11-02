@@ -6,7 +6,27 @@
 
 export const API_BASE_KEY = "twt.apiBase.v1";
 export const SETTINGS_KEY = "twt.settings.v1";
-export const DEFAULT_API_BASE = "http://localhost:8080/api/v1";
+
+// The documented dev server (web/README.md) serves the page on :5173 while the
+// API listens on the devenv/compose port 8080, so same-origin would be wrong
+// there. Every other deployment is same-origin behind the proxy.
+export const DEV_API_BASE = "http://localhost:8080/api/v1";
+const DEV_SERVER_PORT = "5173";
+
+/**
+ * Default API base for a first visit: `<page origin>/api/v1`.
+ *
+ * The production layout (compose proxy, Pangolin, any reverse proxy) serves
+ * the frontend and `/api/v1` from one origin, so the page origin is the right
+ * guess and the login form needs no input. The dev server on :5173 is the one
+ * exception: it has no API of its own.
+ */
+export function defaultApiBase(loc = globalThis.location) {
+    if (!loc || typeof loc.origin !== "string" || loc.origin === "null") {
+        return DEV_API_BASE;
+    }
+    return loc.port === DEV_SERVER_PORT ? DEV_API_BASE : `${loc.origin}/api/v1`;
+}
 
 export const RESET_INTERVALS = [
     ["NONE", "Never"],

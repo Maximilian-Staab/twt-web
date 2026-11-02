@@ -104,7 +104,8 @@ stack needs no CORS; set `PUBLIC_URL=https://twt.example.com` only when the
 frontend has its own origin.
 
 For the compose stack, open `http://localhost:8080/`; the same-origin API base
-is `http://localhost:8080/api/v1`. For the standalone dev server on 5173, use
+is `http://localhost:8080/api/v1` and the login form pre-fills it from the page
+origin. For the standalone dev server on 5173, use
 the devenv API (`http://localhost:8080/api/v1`) and register
 `http://127.0.0.1:5173/` as the redirect URI; the devenv defaults allow that
 origin. The browser runs the same OAuth bootstrap + discovery + PKCE flow as
