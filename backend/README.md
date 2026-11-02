@@ -372,7 +372,7 @@ GitHub Actions runs on every push and pull request. Backend jobs live in
 | `fmt` | `cargo fmt --all --check` |
 | `clippy` | `cargo clippy --all-targets --locked -- -D warnings` |
 | `test` | `cargo test --all-targets --locked` (against a `postgres:16-alpine` service) |
-| `msrv` | `cargo check --all-targets --locked` on the `rust-version` from `Cargo.toml` (1.89) |
+| `msrv` | `cargo check --all-targets --locked` on the `rust-version` from `Cargo.toml` (1.95) |
 | `deny` | `cargo deny check` — licenses, RustSec advisories, yanked crates, wildcards, sources (`deny.toml`) |
 
 `Cargo.lock` is committed, so every cargo invocation uses `--locked`.

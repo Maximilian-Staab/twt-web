@@ -15,6 +15,20 @@ yanked = "deny"
 # Fail for unmaintained crates we depend on directly; transitive ones stay
 # warnings so the build is not blocked by an abandoned leaf crate.
 unmaintained = "workspace"
+ignore = [
+  # jsonwebtoken 11 reaches rsa/p256/p384 through its pure-Rust `rust_crypto`
+  # provider. Both advisories are about *secret-dependent* arithmetic:
+  # RUSTSEC-2023-0071 (rsa) is a private-key timing side channel, and
+  # RUSTSEC-2026-0387 (crypto-bigint, via p256/p384) leaks through non-constant
+  # time bigint ops. This server only *verifies* RS256/RS384/RS512 signatures
+  # (src/auth.rs pins Validation::algorithms) against public JWKS components; it
+  # holds no signing key outside the local test harness and never verifies an
+  # ECDSA token, which works on public inputs anyway. No patched rsa release
+  # exists, and the alternative provider (aws-lc-rs) would add a C/cmake
+  # toolchain to the build stage for no gain in this threat model.
+  { id = "RUSTSEC-2023-0071", reason = "private-key timing side channel; backend verifies with public keys only" },
+  { id = "RUSTSEC-2026-0387", reason = "constant-time bigint ops on secrets; RS* verification uses public inputs only" },
+]
 
 [bans]
 # Duplicate versions are a review prompt, not a failure.

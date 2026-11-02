@@ -26,7 +26,7 @@ cargo deny check        # cargo install cargo-deny
 ```
 
 `Cargo.lock` is committed: keep `--locked` on every cargo command so local and
-CI builds resolve the same versions. `rust-version = "1.89"` is enforced by the
+CI builds resolve the same versions. `rust-version = "1.95"` is enforced by the
 `msrv` CI job, so raise it in the same change that needs a newer toolchain.
 
 `devenv --profile backend shell` provides the Rust toolchain, Postgres and the
