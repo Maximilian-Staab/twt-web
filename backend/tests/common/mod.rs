@@ -37,10 +37,14 @@ pub async fn spawn_server() -> TestServer {
         .await
         .expect("connect TEST_DATABASE_URL");
 
-    sqlx::query(&format!(r#"CREATE DATABASE "{}""#, db_name))
-        .execute(&admin)
-        .await
-        .expect("create scratch db");
+    // The name is `twt_test_<uuid>`, so the identifier is safe to interpolate.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        r#"CREATE DATABASE "{}""#,
+        db_name
+    )))
+    .execute(&admin)
+    .await
+    .expect("create scratch db");
     admin.close().await;
 
     let db_url = rewrite_db(&base, &db_name);
@@ -78,10 +82,13 @@ pub async fn drop_db(db_url: &str) {
     .execute(&admin)
     .await
     .ok();
-    sqlx::query(&format!(r#"DROP DATABASE IF EXISTS "{}""#, db_name))
-        .execute(&admin)
-        .await
-        .expect("drop scratch db");
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        r#"DROP DATABASE IF EXISTS "{}""#,
+        db_name
+    )))
+    .execute(&admin)
+    .await
+    .expect("drop scratch db");
     admin.close().await;
 }
 
