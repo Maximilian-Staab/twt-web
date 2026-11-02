@@ -20,7 +20,7 @@ tokio = { version = "1", features = [
     "time",
 ] }
 
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
     "postgres",
@@ -36,7 +36,7 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
-jsonwebtoken = "9"
+jsonwebtoken = "11"
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
@@ -44,13 +44,13 @@ reqwest = { version = "0.12", default-features = false, features = [
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 anyhow = "1"
-parking_lot = "0.12"
+parking_lot = "0.13"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-base64 = "0.22"
+base64 = "0.23"
 
 [profile.release]
 lto = "thin"
