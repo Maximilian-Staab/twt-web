@@ -1,5 +1,7 @@
 # Builds all three images from their Dockerfiles and boots the dev stack to
 # prove the compose wiring: proxy -> api/web, database migrations, healthchecks.
+# Also checks that the image names compose pulls are the ones docker-publish
+# pushes.
 name: docker
 
 on:
@@ -33,6 +35,19 @@ jobs:
           OAUTH_JWKS_URL=https://idp.example.com/jwks \
           TWT_DOMAIN=twt.example.com \
             docker compose -f compose.yaml -f compose.prod.yaml config --quiet
+
+      # compose.yaml pulls the images the publish workflow pushes; a renamed
+      # image on either side would only surface as a failed pull in production,
+      # so compare both lists here.
+      - name: Published images match the compose stack
+        run: |
+          set -euo pipefail
+          published=$(sed -nE 's/^[[:space:]]+- image: ([a-z0-9-]+)$/\1/p' \
+            ../.github/workflows/docker-publish.yaml | sort -u)
+          used=$(docker compose -f compose.yaml config --images \
+            | grep -E '/twt-[a-z-]+:' | sed -E 's#^[^/]+/[^/]+/##; s#:.*##' | sort -u)
+          printf 'published:\n%s\ncompose:\n%s\n' "$published" "$used"
+          test "$published" = "$used"
 
       - name: Generate dev JWKS keypair
         run: ./dev/gen-dev-keys.sh

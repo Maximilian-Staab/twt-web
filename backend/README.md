@@ -62,12 +62,26 @@ never stored). Target types map to the app's `TargetEnum` readable names
 
 ### Docker Compose (recommended)
 
-Compose is split by environment; the base file has no dev-only settings.
+Compose is split by environment; the base file has no dev-only settings. CI
+publishes multi-arch images (`.github/workflows/docker-publish.yaml`), so a
+deployment host needs neither Rust nor Node:
 
 ```sh
-# local development
+# deployment: pull the prebuilt images, then run
+docker compose -f compose.yaml -f compose.prod.yaml pull
+docker compose -f compose.yaml -f compose.prod.yaml up -d
+
+# local development: build from source
 docker compose -f compose.yaml -f compose.dev.yaml up -d --build
 ```
+
+`docker compose pull` fetches
+`ghcr.io/<owner>/{twt-cloud,twt-web,twt-proxy}` for amd64 and arm64.
+`TWT_IMAGE_PREFIX` (default `ghcr.io/maximilian-staab`) and `TWT_IMAGE_TAG`
+(default `latest`) select what it fetches; `--build` tags a local build with
+the same names, so `up -d` reuses it. The packages are public; a fork
+publishes them under its own owner, where they start private — either make
+them public or run `docker login ghcr.io` once on the deployment host.
 
 | file | adds |
 | --- | --- |
@@ -302,8 +316,9 @@ setup:
    - **Existing terminator**: forward `https://twt.example.com` to
      `http://127.0.0.1:8080` and set HSTS there.
    - **Built-in TLS edge** (`compose.prod.yaml`): set
-     `TWT_DOMAIN=twt.example.com` in `.env` and run
-     `docker compose -f compose.yaml -f compose.prod.yaml up -d --build`.
+     `TWT_DOMAIN=twt.example.com` in `.env`, then `docker compose -f
+     compose.yaml -f compose.prod.yaml pull` and `up -d` (add `--build` only
+     when deploying from source).
      Caddy obtains/renews the certificate, redirects HTTP→HTTPS, and adds
      HSTS. Do not enable it if another proxy already owns `80`/`443`.
      Certificate volumes created by an older root-running stack are
@@ -336,28 +351,28 @@ twt.example.com {
 }
 ```
 
-`compose.prod.yaml` is the single-node reference and builds the API, web,
-proxy and TLS images locally. For a registry-based rollout, replace each
-`build:` stanza with a pinned `image:` and keep the environment/depends_on
-wiring:
+`compose.prod.yaml` is the single-node reference: it pulls the prebuilt API,
+web, proxy and TLS images (`docker compose pull`) and falls back to a local
+build only when `--build` is passed. Pin a release instead of tracking
+`latest`, so a redeploy is a deliberate step:
 
-```yaml
-services:
-  api:
-    image: ghcr.io/<owner>/twt-cloud@sha256:<digest>
-    environment:
-      DATABASE_URL: postgres://user:pass@postgres:5432/twt_cloud
-      OAUTH_ISSUER_URL: https://idp.example.com
-      OAUTH_AUDIENCE: twt-api
-      OAUTH_JWKS_URL: https://idp.example.com/jwks
-      RETENTION_DAYS: "180"
-    depends_on:
-      postgres:
-        condition: service_healthy
-  postgres:
-    image: postgres:16-alpine@sha256:<digest>
-    …
+```sh
+# .env: TWT_IMAGE_TAG=v1.2.3
+docker compose -f compose.yaml -f compose.prod.yaml pull
+docker compose -f compose.yaml -f compose.prod.yaml up -d
 ```
+
+The same images work without compose. Each service only needs its environment
+plus the config/compose wiring:
+
+| image | needs |
+| --- | --- |
+| `ghcr.io/<owner>/twt-cloud:<tag>` | `DATABASE_URL`, the OAuth vars; Postgres reachable; listens on `BIND_ADDR` (default `0.0.0.0:8080`), health at `/api/v1/healthz` |
+| `ghcr.io/<owner>/twt-web:<tag>` | optionally `TWT_CSP_CONNECT_SRC`; serves `/` on `:80`, health at `/healthz` |
+| `ghcr.io/<owner>/twt-proxy:<tag>` | a Caddyfile mounted at `/etc/caddy/Caddyfile` (the repo ships `deploy/Caddyfile` for the same-origin proxy and `deploy/domain.Caddyfile` for the TLS edge) and, for the edge, the `caddy_data`/`caddy_config` volumes |
+
+The proxy image contains no configuration on purpose: the same image runs as
+the internal proxy (`api:8080` + `web:80`) and as the TLS edge (`proxy:80`).
 
 Requirements not covered by the compose file (backups, monitoring, log
 shipping) stay operator responsibility.
@@ -379,10 +394,11 @@ GitHub Actions runs on every push and pull request. Backend jobs live in
 
 Other workflows: [`docker.yaml`](../.github/workflows/docker.yaml) builds all
 three images and boots `compose.yaml` + `compose.dev.yaml` until every
-healthcheck passes, then probes the proxy; `docker-publish.yaml` pushes
-`ghcr.io/<owner>/twt-cloud` on `main` and `v*` tags; `secret-scan.yaml` runs
-gitleaks over the full history; `openapi-lint.yaml` lints [`../docs/openapi.yaml`](../docs/openapi.yaml)
-with the rules in [`../redocly.yaml`](../redocly.yaml).
+healthcheck passes, then probes the proxy; `docker-publish.yaml` pushes the
+multi-arch `ghcr.io/<owner>/{twt-cloud,twt-web,twt-proxy}` images on `main` and
+`v*` tags; `secret-scan.yaml` runs gitleaks over the full history;
+`openapi-lint.yaml` lints [`../docs/openapi.yaml`](../docs/openapi.yaml) with
+the rules in [`../redocly.yaml`](../redocly.yaml).
 
 ## Security invariants (verified live)
 

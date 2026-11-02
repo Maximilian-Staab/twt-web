@@ -1,8 +1,20 @@
 # Base stack: Postgres + storage API + web frontend + same-origin HTTP proxy.
 #
+# Every twt service has both an `image` and a `build` stanza:
+#
+#   docker compose pull                                  # prebuilt images (production)
+#   docker compose up -d                                 # run what was pulled
+#   docker compose ... up -d --build                     # build from source (development)
+#
+# `pull` fetches ghcr.io/<owner>/{twt-cloud,twt-web,twt-proxy} (multi-arch);
+# `--build` tags the local build with the same names, so a later `up` reuses it.
+# Override TWT_IMAGE_PREFIX/TWT_IMAGE_TAG (see .env.example) to pin a fork or a
+# released version.
+#
 # Environment-specific files layer on top:
 #   docker compose -f compose.yaml -f compose.dev.yaml  up -d --build   # local dev
-#   docker compose -f compose.yaml -f compose.prod.yaml up -d --build   # deployment
+#   docker compose -f compose.yaml -f compose.prod.yaml pull            # deployment
+#   docker compose -f compose.yaml -f compose.prod.yaml up -d
 #
 # Same-origin layout:
 #   /            -> web:80
@@ -36,6 +48,7 @@ services:
     restart: unless-stopped
 
   api:
+    image: ${TWT_IMAGE_PREFIX:-ghcr.io/maximilian-staab}/twt-cloud:${TWT_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -59,6 +72,7 @@ services:
     restart: unless-stopped
 
   web:
+    image: ${TWT_IMAGE_PREFIX:-ghcr.io/maximilian-staab}/twt-web:${TWT_IMAGE_TAG:-latest}
     build:
       context: ../web
       dockerfile: Dockerfile
@@ -74,6 +88,7 @@ services:
   # Same-origin HTTP entrypoint. Not the TLS edge: the TLS terminator forwards
   # the public URL here.
   proxy:
+    image: ${TWT_IMAGE_PREFIX:-ghcr.io/maximilian-staab}/twt-proxy:${TWT_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: deploy/Dockerfile.caddy

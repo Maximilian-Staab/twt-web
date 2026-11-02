@@ -1,5 +1,12 @@
-# Publishes the backend image referenced in backend/README.md:
-#   ghcr.io/<owner>/twt-cloud:latest
+# Publishes the three runtime images that backend/compose.yaml consumes:
+#
+#   ghcr.io/<owner>/twt-cloud   backend API (Axum + Postgres)
+#   ghcr.io/<owner>/twt-web     static web frontend (Caddy)
+#   ghcr.io/<owner>/twt-proxy   same-origin proxy / TLS edge (Caddy, no config baked in)
+#
+# They are multi-arch (linux/amd64, linux/arm64), so a deployment host needs no
+# Rust/Node toolchain: `docker compose pull` + `up -d` is enough (see
+# backend/README.md, "Production deployment").
 #
 # Runs only from the default branch and from version tags, so pull requests
 # never push to the registry. `contents: read` is enough to check out;
@@ -25,6 +32,22 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: twt-cloud
+            title: twt-cloud backend
+            context: backend
+            file: backend/Dockerfile
+          - image: twt-web
+            title: twt web frontend
+            context: web
+            file: web/Dockerfile
+          - image: twt-proxy
+            title: twt same-origin proxy / TLS edge
+            context: backend
+            file: backend/deploy/Dockerfile.caddy
     steps:
       - uses: actions/checkout@v7
 
@@ -41,7 +64,9 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository_owner }}/twt-cloud
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -52,11 +77,11 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
-          context: backend
-          file: backend/Dockerfile
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
