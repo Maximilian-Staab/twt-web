@@ -6,7 +6,7 @@
 # Base image pinned by digest; refresh with:
 #   docker buildx imagetools inspect caddy:2.11-alpine
 
-FROM caddy:2.11-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
+FROM caddy:2.11-alpine@sha256:78bd35025c7ba85961dd149ae670315129954e77abe2383ac47c89106b35ade9
 
 # Unprivileged runtime user. The upstream image grants cap_net_bind_service to
 # the caddy binary, so :80 works without root; /data and /config stay writable
