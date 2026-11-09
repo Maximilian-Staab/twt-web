@@ -8,7 +8,7 @@
 # Base image pinned by digest; refresh with:
 #   docker buildx imagetools inspect caddy:2.11-alpine
 
-FROM caddy:2.11-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
+FROM caddy:2.11-alpine@sha256:78bd35025c7ba85961dd149ae670315129954e77abe2383ac47c89106b35ade9
 
 RUN addgroup -S -g 10001 app \
     && adduser -S -D -H -u 10001 -G app -s /sbin/nologin app \
