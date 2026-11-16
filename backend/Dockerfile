@@ -6,7 +6,7 @@
 # Base images are pinned by digest for reproducible builds. To refresh a pin:
 #   docker buildx imagetools inspect <image>:<tag>
 
-FROM rust:1-slim@sha256:b8e062b1c3a80183df83d9ba187cadd2b5ab84bc78d453dbfeb2fccd5f982247 AS build
+FROM rust:1-slim@sha256:cc9edbcadf2c27013a642b1d1bb7504e26b1142d6b5ebe58f64cf2eb2bc128ae AS build
 WORKDIR /build
 # cache deps first: build a dummy bin, then swap in the real sources
 COPY Cargo.toml Cargo.lock ./
@@ -17,7 +17,7 @@ COPY src ./src
 COPY migrations ./migrations
 RUN touch src/main.rs && cargo build --release --locked
 
-FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 # curl is only the healthcheck client; the server needs CA roots and nothing
 # else at runtime. Run unprivileged: the API binds 8080 and writes no files.
